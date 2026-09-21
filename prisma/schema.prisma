@@ -1,0 +1,653 @@
+// MedPředání – datové schéma
+//
+// Zásady, které se promítají do celého schématu:
+//  * Každý tenantní model nese practiceId, i tam, kde by šel odvodit přes rodiče.
+//    Díky tomu je RLS politika na všech tabulkách stejná a dá se zkontrolovat pohledem.
+//  * Tajemství (hesla, session, tokeny, kódy) se ukládají výhradně jako hash.
+//  * Osobní a citlivá pole se ukládají zašifrovaná (Bytes), proto na nich nejde hledat.
+//  * Názvy tabulek a sloupců jsou snake_case, aby se RLS a triggery psaly čitelně.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Připojovací řetězce žijí v prisma.config.ts (Prisma 7) a v runtime se
+// předávají přes driver adaptér – aplikace se připojuje jinou rolí než migrace.
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Číselníky
+// ---------------------------------------------------------------------------
+
+enum Role {
+  DOCTOR // lékař – vše kromě správy ordinace
+  NURSE // sestra – příprava a předání balíčků
+  PRACTICE_ADMIN // admin ordinace – uživatelé, NFC čip, nastavení
+
+  @@map("role")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+
+  @@map("user_status")
+}
+
+enum PackageStatus {
+  DRAFT // rozpracovaný, ještě nepředaný
+  READY // připravený k předání
+  HANDED // předaný alespoň jedním kanálem
+  EXPIRED // vypršel, soubory smazány
+  REVOKED // ručně zneplatněný
+
+  @@map("package_status")
+}
+
+enum PackageDocumentKind {
+  TEMPLATE // dokument z knihovny (odkaz na konkrétní verzi)
+  UPLOAD // lékařská zpráva nebo sken nahraný k tomuto balíčku
+
+  @@map("package_document_kind")
+}
+
+enum ActivationStatus {
+  ACTIVE // běží okno pro přiložení telefonu
+  CLAIMED // pacient zadal kód, token vydán
+  EXPIRED // uplynulo okno
+  CANCELLED // lékař zrušil nebo spustil nové předání
+  LOCKED // vyčerpán počet pokusů o zadání kódu
+
+  @@map("activation_status")
+}
+
+enum TokenChannel {
+  NFC
+  EMAIL
+  MANUAL
+
+  @@map("token_channel")
+}
+
+enum VerificationType {
+  NONE // pacient byl fyzicky přítomen (NFC)
+  PIN // šestimístný PIN sdělený ústně
+  DOB // datum narození
+
+  @@map("verification_type")
+}
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  FAILED
+  BOUNCED
+
+  @@map("email_status")
+}
+
+enum ActorType {
+  USER
+  PATIENT
+  SYSTEM
+
+  @@map("actor_type")
+}
+
+enum AuditAction {
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  TOTP_FAILED
+  TOTP_ENROLLED
+  LOGOUT
+  SESSION_EXPIRED
+  PACKAGE_CREATED
+  PACKAGE_UPDATED
+  PACKAGE_PRINTED
+  HANDOFF_ACTIVATED
+  HANDOFF_CODE_FAILED
+  HANDOFF_LOCKED
+  HANDOFF_CLAIMED
+  HANDOFF_CANCELLED
+  TOKEN_ISSUED
+  TOKEN_REVOKED
+  PATIENT_PAGE_VIEWED
+  PATIENT_VERIFY_FAILED
+  DOCUMENT_DOWNLOADED
+  EMAIL_SENT
+  EMAIL_FAILED
+  TEMPLATE_UPLOADED
+  TEMPLATE_ARCHIVED
+  PROBLEM_CREATED
+  PROBLEM_UPDATED
+  USER_CREATED
+  USER_UPDATED
+  USER_DISABLED
+  NFC_TAG_CREATED
+  NFC_TAG_REVOKED
+  SETTINGS_CHANGED
+  FILES_PURGED
+
+  @@map("audit_action")
+}
+
+// ---------------------------------------------------------------------------
+// Ordinace a uživatelé
+// ---------------------------------------------------------------------------
+
+model Practice {
+  id   String @id @default(uuid(7)) @db.Uuid
+  /// Součást veřejné adresy /o/<slug>. Nesmí prozrazovat nic o pacientech.
+  slug String @unique @db.VarChar(64)
+  name String @db.VarChar(200)
+  /// Zobrazuje se pacientovi na neutrální stránce ordinace.
+  addressLine String? @map("address_line") @db.VarChar(200)
+
+  /// Výchozí platnost pacientského odkazu ve dnech.
+  linkTtlDays Int @default(30) @map("link_ttl_days")
+  /// Jak dlouho je aktivace předání otevřená, v sekundách.
+  handoffTtlSeconds Int @default(180) @map("handoff_ttl_seconds")
+  /// Kolik pokusů o zadání kódu celkem, než se aktivace zamkne.
+  maxCodeAttempts Int @default(5) @map("max_code_attempts")
+  /// Nečinnost, po které vyprší přihlášení, v minutách.
+  sessionIdleMinutes Int @default(30) @map("session_idle_minutes")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  users        User[]
+  nfcTags      NfcTag[]
+  problems     Problem[]
+  templates    TemplateDocument[]
+  versions     TemplateDocumentVersion[]
+  packages     Package[]
+  packageDocs  PackageDocument[]
+  uploads      UploadedFile[]
+  activations  HandoffActivation[]
+  tokens       PatientAccessToken[]
+  emails       EmailDispatch[]
+
+  @@map("practice")
+}
+
+model User {
+  id         String @id @default(uuid(7)) @db.Uuid
+  practiceId String @map("practice_id") @db.Uuid
+
+  /// Unikátní v rámci celé instalace – slouží jako přihlašovací jméno.
+  email        String     @unique @db.VarChar(320)
+  passwordHash String     @map("password_hash") @db.VarChar(255)
+  name         String     @db.VarChar(200)
+  roles        Role[]
+  status       UserStatus @default(ACTIVE)
+
+  /// TOTP tajemství, šifrované aplikačním klíčem. Dokud není potvrzené,
+  /// uživatel se dostane pouze na obrazovku nastavení 2FA.
+  totpSecretEnc     Bytes?    @map("totp_secret_enc")
+  totpConfirmedAt   DateTime? @map("totp_confirmed_at") @db.Timestamptz(6)
+  /// Číslo časového okna, ve kterém byl naposledy použit platný TOTP kód.
+  /// Brání tomu, aby se stejný šestimístný kód dal během svých 30 sekund
+  /// použít podruhé – například když ho někdo odezře přes rameno.
+  totpLastCounter   BigInt?   @map("totp_last_counter")
+  /// Záložní kódy pro případ ztráty telefonu, uložené jako hash.
+  recoveryCodeHashes String[] @map("recovery_code_hashes")
+
+  failedLoginCount Int       @default(0) @map("failed_login_count")
+  lockedUntil      DateTime? @map("locked_until") @db.Timestamptz(6)
+  lastLoginAt      DateTime? @map("last_login_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  practice           Practice                  @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  sessions           Session[]
+  uploadedVersions   TemplateDocumentVersion[]
+  createdPackages    Package[]
+  createdUploads     UploadedFile[]
+  createdActivations HandoffActivation[]
+  revokedTokens      PatientAccessToken[]
+  sentEmails         EmailDispatch[]
+  createdNfcTags     NfcTag[]
+
+  @@index([practiceId])
+  @@map("user")
+}
+
+model Session {
+  id     String @id @default(uuid(7)) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  /// SHA-256 tokenu ze session cookie. Plaintext existuje jen v prohlížeči.
+  tokenHash String @unique @map("token_hash") @db.VarChar(64)
+
+  /// Session vzniká už po zadání hesla, ale plný přístup dá až po TOTP.
+  totpVerifiedAt DateTime? @map("totp_verified_at") @db.Timestamptz(6)
+
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeenAt        DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  /// Klouzavá expirace – posouvá se při aktivitě.
+  idleExpiresAt     DateTime  @map("idle_expires_at") @db.Timestamptz(6)
+  /// Tvrdý strop bez ohledu na aktivitu.
+  absoluteExpiresAt DateTime  @map("absolute_expires_at") @db.Timestamptz(6)
+  revokedAt         DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  ip        String? @db.Inet
+  userAgent String? @map("user_agent") @db.VarChar(500)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([idleExpiresAt])
+  @@map("session")
+}
+
+model NfcTag {
+  id         String @id @default(uuid(7)) @db.Uuid
+  practiceId String @map("practice_id") @db.Uuid
+
+  label String @db.VarChar(120)
+  /// HMAC tajemství, které je součástí URL zapsané na čipu.
+  /// Plaintext se zobrazí jednou při generování a dál nikde neexistuje.
+  secretHmac String @map("secret_hmac") @db.VarChar(64)
+
+  createdById String    @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeenAt  DateTime? @map("last_seen_at") @db.Timestamptz(6)
+  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  practice    Practice            @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  createdBy   User                @relation(fields: [createdById], references: [id])
+  activations HandoffActivation[]
+
+  @@index([practiceId])
+  @@map("nfc_tag")
+}
+
+// ---------------------------------------------------------------------------
+// Knihovna připravených dokumentů
+// ---------------------------------------------------------------------------
+
+model Problem {
+  id         String @id @default(uuid(7)) @db.Uuid
+  practiceId String @map("practice_id") @db.Uuid
+
+  name  String  @db.VarChar(200)
+  /// Kód MKN-10, nepovinný. Hledá se podle něj přesnou shodou.
+  icd10 String? @db.VarChar(16)
+  note  String? @db.VarChar(500)
+
+  sortOrder  Int       @default(0) @map("sort_order")
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  practice  Practice           @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  documents TemplateDocument[]
+  packages  Package[]
+
+  /// Unikátní dvojice kvůli složeným cizím klíčům – viz poznámka u vazeb.
+  @@unique([practiceId, id])
+  @@index([practiceId, archivedAt])
+  @@index([practiceId, icd10])
+  @@map("problem")
+}
+
+model TemplateDocument {
+  id         String @id @default(uuid(7)) @db.Uuid
+  practiceId String @map("practice_id") @db.Uuid
+  problemId  String @map("problem_id") @db.Uuid
+
+  title      String    @db.VarChar(200)
+  sortOrder  Int       @default(0) @map("sort_order")
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+  /// Verze, která se předvybírá při přípravě balíčku.
+  currentVersionId String? @unique @map("current_version_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  practice       Practice                  @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  problem        Problem                   @relation(fields: [practiceId, problemId], references: [practiceId, id], onDelete: Cascade)
+  versions       TemplateDocumentVersion[] @relation("DocumentVersions")
+  currentVersion TemplateDocumentVersion?  @relation("CurrentVersion", fields: [practiceId, currentVersionId], references: [practiceId, id])
+
+  /// Unikátní dvojice kvůli složeným cizím klíčům – viz poznámka u vazeb.
+  @@unique([practiceId, id])
+  /// Vyžaduje Prisma pro vazbu 1:1 na aktuální verzi.
+  @@unique([practiceId, currentVersionId])
+  @@index([practiceId, problemId, archivedAt])
+  @@map("template_document")
+}
+
+model TemplateDocumentVersion {
+  id                 String @id @default(uuid(7)) @db.Uuid
+  practiceId         String @map("practice_id") @db.Uuid
+  templateDocumentId String @map("template_document_id") @db.Uuid
+
+  version Int
+
+  storageKey String @map("storage_key") @db.VarChar(255)
+  sizeBytes  Int    @map("size_bytes")
+  pageCount  Int    @map("page_count")
+  /// SHA-256 původního nešifrovaného obsahu – kontrola integrity a deduplikace.
+  sha256     String @db.VarChar(64)
+
+  /// Obálkové šifrování: klíč souboru zabalený hlavním klíčem.
+  dekWrapped Bytes @map("dek_wrapped")
+  contentIv  Bytes @map("content_iv")
+  contentTag Bytes @map("content_tag")
+  keyVersion Int   @default(1) @map("key_version")
+
+  uploadedById String   @map("uploaded_by_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  practice   Practice          @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  document   TemplateDocument  @relation("DocumentVersions", fields: [practiceId, templateDocumentId], references: [practiceId, id], onDelete: Cascade)
+  currentFor TemplateDocument? @relation("CurrentVersion")
+  uploadedBy User              @relation(fields: [uploadedById], references: [id])
+  usedIn     PackageDocument[]
+
+  /// Unikátní dvojice kvůli složeným cizím klíčům – viz poznámka u vazeb.
+  @@unique([practiceId, id])
+  @@unique([templateDocumentId, version])
+  @@index([practiceId])
+  @@map("template_document_version")
+}
+
+// ---------------------------------------------------------------------------
+// Balíček pro pacienta
+// ---------------------------------------------------------------------------
+
+model Package {
+  id          String  @id @default(uuid(7)) @db.Uuid
+  practiceId  String  @map("practice_id") @db.Uuid
+  createdById String  @map("created_by_id") @db.Uuid
+  problemId   String? @map("problem_id") @db.Uuid
+
+  /// Nepovinné označení pacienta, šifrované. Slouží jen k rozpoznání v historii.
+  patientLabelEnc Bytes? @map("patient_label_enc")
+  /// Interní poznámka, šifrovaná.
+  noteEnc         Bytes? @map("note_enc")
+
+  status PackageStatus @default(DRAFT)
+  /// Nastaví se při prvním předání na now() + Practice.linkTtlDays.
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(6)
+  /// Kdy úklidová úloha smazala soubory a osobní pole.
+  purgedAt  DateTime? @map("purged_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  practice    Practice             @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  createdBy   User                 @relation(fields: [createdById], references: [id])
+  /// NoAction, ne SetNull: vynulovat by šlo jen problemId, ne practiceId.
+  /// Kontrola probíhá až na konci příkazu, takže smazání ordinace (kaskáda
+  /// na problémy i balíčky současně) projde, kdežto smazání samotného
+  /// problému, na který visí balíčky, databáze odmítne. To je chtěné –
+  /// historie předaných balíčků se nemá tiše ztratit.
+  problem     Problem?             @relation(fields: [practiceId, problemId], references: [practiceId, id], onDelete: NoAction)
+  documents   PackageDocument[]
+  uploads     UploadedFile[]
+  activations HandoffActivation[]
+  tokens      PatientAccessToken[]
+  emails      EmailDispatch[]
+
+  /// Unikátní dvojice kvůli složeným cizím klíčům – viz poznámka u vazeb.
+  @@unique([practiceId, id])
+  @@index([practiceId, createdAt])
+  @@index([practiceId, status])
+  @@index([expiresAt])
+  @@map("package")
+}
+
+model PackageDocument {
+  id         String @id @default(uuid(7)) @db.Uuid
+  practiceId String @map("practice_id") @db.Uuid
+  packageId  String @map("package_id") @db.Uuid
+
+  kind PackageDocumentKind
+
+  /// Balíček odkazuje na konkrétní VERZI šablony, ne na dokument. Historie tak
+  /// zůstane pravdivá i po pozdější aktualizaci letáku.
+  templateVersionId String? @map("template_version_id") @db.Uuid
+  uploadedFileId    String? @map("uploaded_file_id") @db.Uuid
+
+  /// Název zmrazený v okamžiku vložení – pacient uvidí totéž i po přejmenování.
+  title     String @db.VarChar(200)
+  sortOrder Int    @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  practice        Practice                 @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  package         Package                  @relation(fields: [practiceId, packageId], references: [practiceId, id], onDelete: Cascade)
+  templateVersion TemplateDocumentVersion? @relation(fields: [practiceId, templateVersionId], references: [practiceId, id])
+  uploadedFile    UploadedFile?            @relation(fields: [practiceId, uploadedFileId], references: [practiceId, id], onDelete: Cascade)
+
+  @@index([practiceId])
+  @@index([packageId, sortOrder])
+  @@map("package_document")
+}
+
+model UploadedFile {
+  id         String  @id @default(uuid(7)) @db.Uuid
+  practiceId String  @map("practice_id") @db.Uuid
+  packageId  String? @map("package_id") @db.Uuid
+
+  storageKey String @map("storage_key") @db.VarChar(255)
+  sizeBytes  Int    @map("size_bytes")
+  pageCount  Int    @map("page_count")
+  sha256     String @db.VarChar(64)
+  mimeType   String @map("mime_type") @db.VarChar(100)
+
+  dekWrapped Bytes @map("dek_wrapped")
+  contentIv  Bytes @map("content_iv")
+  contentTag Bytes @map("content_tag")
+  keyVersion Int   @default(1) @map("key_version")
+
+  uploadedById String    @map("uploaded_by_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Po expiraci balíčku se obsah v úložišti smaže a zůstane jen tento záznam.
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  practice   Practice          @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  package    Package?          @relation(fields: [practiceId, packageId], references: [practiceId, id], onDelete: Cascade)
+  uploadedBy User              @relation(fields: [uploadedById], references: [id])
+  usedIn     PackageDocument[]
+
+  /// Unikátní dvojice kvůli složeným cizím klíčům – viz poznámka u vazeb.
+  @@unique([practiceId, id])
+  @@index([practiceId])
+  @@index([packageId])
+  @@map("uploaded_file")
+}
+
+// ---------------------------------------------------------------------------
+// Předání přes NFC
+// ---------------------------------------------------------------------------
+
+model HandoffActivation {
+  id         String  @id @default(uuid(7)) @db.Uuid
+  practiceId String  @map("practice_id") @db.Uuid
+  packageId  String  @map("package_id") @db.Uuid
+  nfcTagId   String? @map("nfc_tag_id") @db.Uuid
+
+  /// HMAC-SHA256(kód, pepper). U čtyřmístného kódu je pomalý hash k ničemu –
+  /// keyspace má 10 000 prvků. Pepper mimo databázi ale znamená, že únik
+  /// samotné databáze kód neprozradí.
+  codeHmac String @map("code_hmac") @db.VarChar(64)
+
+  status    ActivationStatus @default(ACTIVE)
+  expiresAt DateTime         @map("expires_at") @db.Timestamptz(6)
+
+  /// Čítač je globální na aktivaci, ne na IP adresu. Šance na uhodnutí je tedy
+  /// maxAttempts/10000 bez ohledu na to, kolik útočníků se zapojí.
+  attemptCount Int @default(0) @map("attempt_count")
+  maxAttempts  Int @default(5) @map("max_attempts")
+
+  createdById String   @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  claimedAt            DateTime? @map("claimed_at") @db.Timestamptz(6)
+  patientAccessTokenId String?   @unique @map("patient_access_token_id") @db.Uuid
+
+  practice           Practice            @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  package            Package             @relation(fields: [practiceId, packageId], references: [practiceId, id], onDelete: Cascade)
+  nfcTag             NfcTag?             @relation(fields: [nfcTagId], references: [id], onDelete: SetNull)
+  createdBy          User                @relation(fields: [createdById], references: [id])
+  patientAccessToken PatientAccessToken? @relation(fields: [patientAccessTokenId], references: [id])
+
+  @@index([practiceId, status])
+  @@index([packageId])
+  @@index([expiresAt])
+  @@map("handoff_activation")
+}
+
+model PatientAccessToken {
+  id         String @id @default(uuid(7)) @db.Uuid
+  practiceId String @map("practice_id") @db.Uuid
+  packageId  String @map("package_id") @db.Uuid
+
+  /// SHA-256 tokenu z adresy /d/<token>. Token má 256 bitů entropie, takže
+  /// rychlý hash je bezpečný a zároveň indexovatelný.
+  tokenHash String @unique @map("token_hash") @db.VarChar(64)
+
+  channel TokenChannel
+
+  /// U e-mailového kanálu je ověření povinné – odkaz a ověření jdou jinou cestou.
+  verificationType VerificationType @default(NONE) @map("verification_type")
+  verificationHmac String?          @map("verification_hmac") @db.VarChar(64)
+  verifyAttempts   Int              @default(0) @map("verify_attempts")
+  /// Kdy pacient prošel ověřením. Dokud je prázdné, vidí jen výzvu k zadání
+  /// PINu nebo data narození, ne dokumenty.
+  verifiedAt       DateTime?        @map("verified_at") @db.Timestamptz(6)
+
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedById String?   @map("revoked_by_id") @db.Uuid
+
+  firstAccessedAt DateTime? @map("first_accessed_at") @db.Timestamptz(6)
+  lastAccessedAt  DateTime? @map("last_accessed_at") @db.Timestamptz(6)
+  accessCount     Int       @default(0) @map("access_count")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  practice   Practice           @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  package    Package            @relation(fields: [practiceId, packageId], references: [practiceId, id], onDelete: Cascade)
+  revokedBy  User?              @relation(fields: [revokedById], references: [id])
+  activation HandoffActivation?
+  emails     EmailDispatch[]
+
+  @@index([practiceId])
+  @@index([packageId])
+  @@index([expiresAt])
+  @@map("patient_access_token")
+}
+
+model EmailDispatch {
+  id                   String @id @default(uuid(7)) @db.Uuid
+  practiceId           String @map("practice_id") @db.Uuid
+  packageId            String @map("package_id") @db.Uuid
+  patientAccessTokenId String @map("patient_access_token_id") @db.Uuid
+
+  /// Adresa příjemce šifrovaně; maže se s expirací balíčku.
+  recipientEnc  Bytes  @map("recipient_enc")
+  /// Hash adresy zůstává i po smazání, aby audit dával smysl.
+  recipientHash String @map("recipient_hash") @db.VarChar(64)
+
+  status            EmailStatus @default(QUEUED)
+  providerMessageId String?     @map("provider_message_id") @db.VarChar(255)
+  error             String?     @db.VarChar(500)
+
+  sentById  String    @map("sent_by_id") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  sentAt    DateTime? @map("sent_at") @db.Timestamptz(6)
+
+  practice Practice           @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  package  Package            @relation(fields: [practiceId, packageId], references: [practiceId, id], onDelete: Cascade)
+  token    PatientAccessToken @relation(fields: [patientAccessTokenId], references: [id], onDelete: Cascade)
+  sentBy   User               @relation(fields: [sentById], references: [id])
+
+  @@index([practiceId, createdAt])
+  @@index([packageId])
+  @@map("email_dispatch")
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+/// POZNÁMKA KE SLOŽENÝM CIZÍM KLÍČŮM
+///
+/// Vazby mezi tabulkami ordinace nesou practice_id, i když by stačilo samotné
+/// id rodiče. Důvod: kontroly cizích klíčů v PostgreSQL row-level security
+/// OBCHÁZEJÍ – běží mimo ni. Bez practice_id ve vazbě by tedy šlo založit
+/// dokument v ordinaci A a ukázat jím na problém ordinace B. Data by to
+/// neprozradilo (čtení pořád filtruje RLS), ale vznikl by nesmyslný odkaz
+/// napříč ordinacemi. Se složeným klíčem to databáze odmítne.
+///
+/// Odhaleno testem „nahrání do problému cizí ordinace neprojde".
+
+/// Přidávací tabulka. Neměnnost je vynucená dvakrát:
+///  1. Aplikační role má jen INSERT a SELECT – žádné UPDATE ani DELETE.
+///  2. Hashový řetěz per ordinace počítaný databázovým triggerem. Aplikace
+///     hodnoty seq, prevHash a hash neposílá, trigger je vždy přepíše.
+///
+/// Odkazy na ordinaci, uživatele a balíček jsou ZÁMĚRNĚ bez cizích klíčů.
+/// Cizí klíč s onDelete: SetNull by při smazání uživatele vyvolal UPDATE, který
+/// trigger neměnnosti odmítne – uživatele ani ordinaci by pak nešlo nikdy smazat.
+/// Auditní záznam má smazanou entitu přežít, proto se ukládá holé id a k tomu
+/// opsané jméno aktéra.
+model AuditLog {
+  id         BigInt  @id @default(autoincrement())
+  practiceId String? @map("practice_id") @db.Uuid
+  /// Pořadí v rámci ordinace. Doplňuje trigger.
+  seq        BigInt?
+
+  action    AuditAction
+  actorType ActorType   @map("actor_type")
+  /// Bez cizího klíče záměrně – viz poznámka nad modelem.
+  actorUserId String? @map("actor_user_id") @db.Uuid
+  /// Jméno zmrazené v okamžiku zápisu, aby log zůstal čitelný i poté,
+  /// co uživatel z ordinace odejde a jeho účet se smaže.
+  actorName   String? @map("actor_name") @db.VarChar(200)
+
+  packageId  String? @map("package_id") @db.Uuid
+  tokenId    String? @map("token_id") @db.Uuid
+  documentId String? @map("document_id") @db.Uuid
+
+  ip        String? @db.Inet
+  userAgent String? @map("user_agent") @db.VarChar(500)
+  metadata  Json    @default("{}")
+
+  /// Doplňuje trigger.
+  prevHash String? @map("prev_hash") @db.VarChar(64)
+  hash     String? @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([practiceId, seq])
+  @@index([practiceId, createdAt])
+  @@index([packageId])
+  @@index([action, createdAt])
+  @@map("audit_log")
+}
+
+// ---------------------------------------------------------------------------
+// Omezování četnosti
+// ---------------------------------------------------------------------------
+
+/// Počítadla v databázi místo Redisu – provoz je řádově desítky akcí denně
+/// a tohle nepřidává další službu do infrastruktury ani do smluv.
+model RateLimit {
+  /// Hash z názvu akce a identifikátoru (IP, e-mail, id aktivace).
+  key         String   @id @db.VarChar(128)
+  count       Int      @default(0)
+  windowStart DateTime @map("window_start") @db.Timestamptz(6)
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@map("rate_limit")
+}

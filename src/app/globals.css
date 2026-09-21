@@ -1,0 +1,36 @@
+@import 'tailwindcss';
+
+/*
+ * Ordinace je prostředí, kde se pracuje ve spěchu a často na tabletu.
+ * Výchozí velikost písma je proto větší než obvyklé a ovládací prvky mají
+ * dost velkou plochu na dotek.
+ */
+@theme {
+  --color-podklad: oklch(0.985 0.002 250);
+  --color-plocha: oklch(1 0 0);
+  --color-obrys: oklch(0.9 0.004 250);
+  --color-text: oklch(0.22 0.01 250);
+  --color-text-tlumeny: oklch(0.52 0.012 250);
+
+  --color-hlavni: oklch(0.52 0.16 250);
+  --color-hlavni-tmavy: oklch(0.44 0.17 250);
+  --color-uspech: oklch(0.55 0.15 150);
+  --color-varovani: oklch(0.62 0.16 65);
+  --color-chyba: oklch(0.55 0.19 25);
+}
+
+html {
+  font-size: 17px;
+}
+
+body {
+  background-color: var(--color-podklad);
+  color: var(--color-text);
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Viditelné zaměření klávesnicí – ordinace se často ovládá jen klávesnicí. */
+:focus-visible {
+  outline: 3px solid var(--color-hlavni);
+  outline-offset: 2px;
+}
