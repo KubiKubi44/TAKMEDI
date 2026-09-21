@@ -335,3 +335,160 @@ export async function updatePractice(
 
   return { saved: true }
 }
+
+// ---------------------------------------------------------------------------
+// Obnova přístupu
+// ---------------------------------------------------------------------------
+//
+// Dvě akce, které dřív chyběly, ačkoli je přihlašovací obrazovky slibují.
+// Bez nich se člověk, který zapomněl heslo nebo přišel o telefon s ověřovací
+// aplikací, do systému nedostal vůbec – dvoufázové přihlášení je povinné
+// a jinou cestu dovnitř aplikace nemá.
+//
+// Obě akce ruší VŠECHNY relace dotčeného účtu. Kdo žádá o obnovu přístupu,
+// má typicky podezření, že se k účtu dostal někdo další; ponechat běžící
+// přihlášení by obnovu vyprázdnilo.
+
+const ObnovaSchema = z.object({
+  userId: z.uuid({ error: 'Neplatný uživatel.' }),
+})
+
+export type ObnovaState = {
+  error?: string
+  /** Nové jednorázové heslo. Zobrazí se jednou a nikde se neukládá. */
+  noveHeslo?: { userId: string; jmeno: string; heslo: string }
+  /** Potvrzení zrušeného druhého faktoru. */
+  zruseno2fa?: { jmeno: string; jaSam: boolean }
+}
+
+/**
+ * Nastaví uživateli nové jednorázové heslo.
+ *
+ * Heslo se vrátí volajícímu a zobrazí se jednou – admin ho předá z ruky do
+ * ruky, stejně jako u nově založeného účtu. E-mailem nejde schválně: schránka
+ * bývá v ordinaci sdílená a zprávy se z ní nemažou.
+ */
+export async function resetUserPassword(
+  _prev: ObnovaState,
+  formData: FormData,
+): Promise<ObnovaState> {
+  try {
+    await requireTrustedOrigin()
+  } catch (error) {
+    if (error instanceof CrossOriginError) return { error: CHYBA_CIZI_PUVOD }
+    throw error
+  }
+
+  const session = await requireRole('PRACTICE_ADMIN')
+  const parsed = ObnovaSchema.safeParse({ userId: formData.get('userId') })
+  if (!parsed.success) return { error: 'Neplatný uživatel.' }
+
+  const practiceId = session.user.practiceId
+  const context = await getRequestContext()
+
+  const jednorazoveHeslo = `${generateRecoveryCode()}-${generateRecoveryCode()}`
+  const passwordHash = await hashPassword(jednorazoveHeslo)
+
+  const cil = await withPractice(practiceId, async (db) => {
+    // Cizí účet row-level security nevrátí, takže null znamená „není z téhle
+    // ordinace nebo neexistuje". Ven jde jedna hláška pro obojí.
+    const uzivatel = await db.user.findUnique({
+      where: { id: parsed.data.userId },
+      select: { id: true, name: true },
+    })
+    if (!uzivatel) return null
+
+    await db.user.update({
+      where: { id: uzivatel.id },
+      data: {
+        passwordHash,
+        // Účet zamčený po několika překlepech se obnovou hesla zároveň odemkne.
+        failedLoginCount: 0,
+        lockedUntil: null,
+      },
+    })
+
+    await writeAudit(db, practiceId, {
+      action: 'USER_UPDATED',
+      actorType: 'USER',
+      actorUserId: session.userId,
+      actorName: session.user.name,
+      metadata: { akce: 'obnova_hesla', dotcenyUzivatelId: uzivatel.id, jmeno: uzivatel.name },
+      context,
+    })
+
+    return uzivatel
+  })
+
+  if (!cil) return { error: 'Uživatele se nepodařilo najít.' }
+
+  await revokeAllSessions(cil.id)
+  revalidatePath('/nastaveni')
+
+  return { noveHeslo: { userId: cil.id, jmeno: cil.name, heslo: jednorazoveHeslo } }
+}
+
+/**
+ * Zruší uživateli druhý faktor.
+ *
+ * Používá se po ztrátě telefonu. Účet zůstane platný, jen si při nejbližším
+ * přihlášení projde nastavením ověřovací aplikace znovu.
+ *
+ * Admin to smí udělat i sám sobě – v ordinaci bývá jediný a jinak by se při
+ * ztrátě telefonu nedostal dovnitř nikdo. Přijde tím o vlastní přihlášení,
+ * což je správně: nový druhý faktor si musí nastavit průchodem od hesla.
+ */
+export async function resetUserTotp(
+  _prev: ObnovaState,
+  formData: FormData,
+): Promise<ObnovaState> {
+  try {
+    await requireTrustedOrigin()
+  } catch (error) {
+    if (error instanceof CrossOriginError) return { error: CHYBA_CIZI_PUVOD }
+    throw error
+  }
+
+  const session = await requireRole('PRACTICE_ADMIN')
+  const parsed = ObnovaSchema.safeParse({ userId: formData.get('userId') })
+  if (!parsed.success) return { error: 'Neplatný uživatel.' }
+
+  const practiceId = session.user.practiceId
+  const context = await getRequestContext()
+
+  const cil = await withPractice(practiceId, async (db) => {
+    const uzivatel = await db.user.findUnique({
+      where: { id: parsed.data.userId },
+      select: { id: true, name: true, totpConfirmedAt: true },
+    })
+    if (!uzivatel) return null
+
+    await db.user.update({
+      where: { id: uzivatel.id },
+      data: { totpSecretEnc: null, totpConfirmedAt: null, totpLastCounter: null },
+    })
+
+    await writeAudit(db, practiceId, {
+      action: 'USER_UPDATED',
+      actorType: 'USER',
+      actorUserId: session.userId,
+      actorName: session.user.name,
+      metadata: {
+        akce: 'zruseni_druheho_faktoru',
+        dotcenyUzivatelId: uzivatel.id,
+        jmeno: uzivatel.name,
+        meloNastaveno: uzivatel.totpConfirmedAt !== null,
+      },
+      context,
+    })
+
+    return uzivatel
+  })
+
+  if (!cil) return { error: 'Uživatele se nepodařilo najít.' }
+
+  await revokeAllSessions(cil.id)
+  revalidatePath('/nastaveni')
+
+  return { zruseno2fa: { jmeno: cil.name, jaSam: cil.id === session.userId } }
+}

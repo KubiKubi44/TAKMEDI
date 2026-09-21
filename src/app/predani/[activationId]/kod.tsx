@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 
 import { Alert, Button, Card } from '@/components/ui'
@@ -156,6 +156,8 @@ export function Kod({
 }: KodProps) {
   const router = useRouter()
 
+  /** Délka okna z prvního naměřeného zbytku – slouží ubývající lince. */
+  const celkemRef = useRef<number | null>(null)
   const [serverStav, setServerStav] = useState<StavPredani>(stav)
   const [pokusy, setPokusy] = useState<number | null>(pokusuZbyva)
   const [prevzaty, setPrevzaty] = useState<{ nacteno: boolean; kod: string | null }>({
@@ -390,60 +392,79 @@ export function Kod({
   const zobrazenyKod = kod ?? prevzaty.kod
   const cislice = zobrazenyKod ? [...zobrazenyKod] : null
 
+  /*
+   * Podíl zbývajícího času pro ubývající linku. Celkovou délku okna
+   * komponenta nezná (server vrací jen okamžik vypršení), takže se bere
+   * z prvního naměřeného zbytku – okno se otevírá hned po aktivaci.
+   */
+  if (celkemRef.current === null && zbyva > 0) celkemRef.current = zbyva
+  const podilZbyva = celkemRef.current ? Math.max(0, Math.min(100, (zbyva / celkemRef.current) * 100)) : 100
+
   return (
     <div className="space-y-6">
       <Card className="space-y-8 text-center sm:p-10">
         <h1 className="text-2xl font-semibold">Kód pro pacienta</h1>
 
-        {cislice ? (
-          <div>
-            {/* Čtečka obrazovky má přečíst kód po číslicích, ne jako číslo
-                „čtyři tisíce osm set dvacet jedna“. */}
-            <p className="sr-only">Kód {cislice.join(' ')}</p>
-            <div aria-hidden="true" className="flex justify-center gap-3 sm:gap-5">
-              {cislice.map((znak, poradi) => (
-                <span
-                  key={poradi}
-                  className="flex min-w-20 items-center justify-center rounded-2xl border-2 border-obrys bg-podklad px-3 py-5 text-7xl leading-none font-semibold tabular-nums sm:min-w-32 sm:px-6 sm:text-8xl"
-                >
-                  {znak}
-                </span>
-              ))}
-            </div>
-          </div>
-        ) : prevzaty.nacteno ? (
+        {prevzaty.nacteno && !cislice ? (
           <Alert tone="info">
             Kód se ukazuje jen na obrazovce, ze které jste předání spustili – po obnovení stránky
             už ho zobrazit nejde. Zrušte prosím předání a spusťte ho znovu.
           </Alert>
         ) : (
-          // Než se kód vyzvedne (jedno překreslení), drží místo prázdné
-          // rámečky. Bez nich by na okamžik probliklo tvrzení, že kód není.
-          <div aria-hidden="true" className="flex justify-center gap-3 sm:gap-5">
-            {[0, 1, 2, 3].map((poradi) => (
-              <span
-                key={poradi}
-                className="h-[7.25rem] min-w-20 rounded-2xl border-2 border-obrys bg-podklad sm:h-[8.75rem] sm:min-w-32"
-              />
-            ))}
+          /*
+           * Tmavý panel je jediné místo v aplikaci, kde se obrací barvy.
+           * Je to schválně: tohle je ten jeden okamžik, kdy se na obrazovku
+           * dívá PACIENT přes stůl, a musí být na první pohled jasné, že
+           * tahle část patří jemu, ne lékaři. Signální barva se nikde jinde
+           * nepoužívá, takže se s ničím neplete.
+           */
+          <div className="-mx-6 rounded-2xl bg-inkoust px-6 py-8 sm:-mx-10 sm:px-10">
+            {cislice ? (
+              // Čtečka obrazovky má přečíst kód po číslicích, ne jako číslo
+              // „čtyři tisíce osm set dvacet jedna“.
+              <p className="sr-only">Kód {cislice.join(' ')}</p>
+            ) : null}
+
+            <div aria-hidden="true" className="flex justify-center gap-2.5 sm:gap-4">
+              {(cislice ?? ['', '', '', '']).map((znak, poradi) => (
+                <span
+                  key={poradi}
+                  className="udaj flex h-28 min-w-[4.5rem] items-center justify-center rounded-xl border border-white/15 bg-white/[0.06] text-6xl leading-none font-semibold text-signal sm:h-36 sm:min-w-28 sm:text-8xl"
+                >
+                  {znak}
+                </span>
+              ))}
+            </div>
+
+            {/*
+              Odpočet jako ubývající linka pod číslicemi. Pacient i lékař
+              vidí zbývající čas periferně, aniž by museli číst údaj.
+            */}
+            <div className="mx-auto mt-7 max-w-md">
+              <div className="h-px w-full bg-white/15">
+                <div
+                  className="h-px bg-signal transition-[width] duration-1000 ease-linear"
+                  style={{ width: `${podilZbyva}%` }}
+                />
+              </div>
+              <p className="mt-3 text-center text-sm text-white/70">
+                Platí ještě{' '}
+                {/* Server a prohlížeč odbaví stránku každý o zlomek sekundy
+                    jinde, takže se první vykreslení může lišit o vteřinu.
+                    Je to jediná hodnota, u které je to v pořádku. */}
+                <span
+                  suppressHydrationWarning
+                  className={[
+                    'udaj font-semibold',
+                    zbyva < CERVENE_OD_S ? 'text-signal' : 'text-white',
+                  ].join(' ')}
+                >
+                  {odpocet(zbyva)}
+                </span>
+              </p>
+            </div>
           </div>
         )}
-
-        <p className="text-lg text-text-tlumeny">
-          Kód platí ještě{' '}
-          {/* Server a prohlížeč odbaví stránku každý o zlomek sekundy jinde,
-              takže se první vykreslení může lišit o vteřinu. Je to jediná
-              hodnota, u které je to v pořádku. */}
-          <span
-            suppressHydrationWarning
-            className={[
-              'font-semibold tabular-nums',
-              zbyva < CERVENE_OD_S ? 'text-chyba' : 'text-text',
-            ].join(' ')}
-          >
-            {odpocet(zbyva)}
-          </span>
-        </p>
 
         {pokusy !== null && pokusy < PLNY_POCET_POKUSU ? (
           <p role="status" className="font-medium text-varovani">

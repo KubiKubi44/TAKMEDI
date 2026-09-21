@@ -2,11 +2,11 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 
 import type { Role } from '@/generated/prisma/enums'
-import { Button, Card } from '@/components/ui'
+import { Button, Card, Znacka } from '@/components/ui'
 import { Hlavicka } from '@/components/hlavicka'
 import { requireRole } from '@/lib/auth'
 import { withPractice } from '@/lib/db'
-import { OrdinaceForm, StavUzivateleForm, UzivatelForm } from './uzivatel-form'
+import { ObnovaPristupu, OrdinaceForm, StavUzivateleForm, UzivatelForm } from './uzivatel-form'
 
 /**
  * Nastavení ordinace a správa uživatelů.
@@ -154,25 +154,39 @@ export default async function NastaveniPage() {
                       {user.roles.map((role) => NAZVY_ROLI[role]).join(', ')}
                     </td>
                     <td className="px-5 py-4">
-                      <span className={zablokovany ? 'text-chyba' : 'text-uspech'}>
+                      <Znacka tone={zablokovany ? 'chyba' : 'uspech'}>
                         {zablokovany ? 'Zablokovaný' : 'Aktivní'}
-                      </span>
+                      </Znacka>
                     </td>
                     <td className="px-5 py-4 text-text-tlumeny">
-                      {user.lastLoginAt ? FORMAT_DATA.format(user.lastLoginAt) : 'Zatím nikdy'}
+                      <span className="udaj text-xs">
+                        {user.lastLoginAt ? FORMAT_DATA.format(user.lastLoginAt) : 'Zatím nikdy'}
+                      </span>
                     </td>
                     <td className="px-5 py-4">
                       {user.totpConfirmedAt ? (
-                        'Nastavené'
+                        <Znacka tone="uspech">Nastavené</Znacka>
                       ) : (
-                        <span className="text-varovani">Chybí</span>
+                        <Znacka tone="neutralni">Zatím ne</Znacka>
                       )}
                     </td>
                     <td className="px-5 py-4 text-right">
+                      <div className="flex flex-col items-end gap-2">
+                        {/*
+                          Obnova přístupu je i u vlastního účtu: admin bývá
+                          v ordinaci jediný a po ztrátě telefonu by se jinak
+                          dovnitř nedostal nikdo.
+                        */}
+                        <ObnovaPristupu
+                          userId={user.id}
+                          userName={user.name}
+                          jaSam={jaSam}
+                          maDruhyFaktor={user.totpConfirmedAt !== null}
+                        />
                       {jaSam ? (
                         // Vlastní účet zablokovat nejde. Server to odmítne
                         // i tak – tady jen nemá smysl nabízet, co neprojde.
-                        <span className="text-text-tlumeny">—</span>
+                        <span className="text-sm text-text-tlumeny">—</span>
                       ) : (
                         <StavUzivateleForm
                           userId={user.id}
@@ -180,6 +194,7 @@ export default async function NastaveniPage() {
                           zablokovany={zablokovany}
                         />
                       )}
+                      </div>
                     </td>
                   </tr>
                 )

@@ -5,12 +5,18 @@ import { useFormStatus } from 'react-dom'
 
 import { Alert, Button, Field, Input } from '@/components/ui'
 import {
-  createUser,
-  updatePractice,
   type CreateUserState,
+  type ObnovaState,
   type PracticeState,
+  createUser,
+  resetUserPassword,
+  resetUserTotp,
   setUserStatus,
+  updatePractice,
 } from './actions'
+
+/** Výchozí stav obou akcí obnovy přístupu. */
+const PRAZDNY_OBNOVA_STAV: ObnovaState = {}
 
 /**
  * Formuláře nastavení, které potřebují stav odpovědi ze serveru.
@@ -282,6 +288,121 @@ function StavTlacitko({ zablokovany, potvrzuji }: { zablokovany: boolean; potvrz
   return (
     <Button type="submit" variant="vedlejsi" className="whitespace-nowrap" disabled={pending}>
       {pending ? probiha : popisek}
+    </Button>
+  )
+}
+
+/**
+ * Obnova přístupu k účtu.
+ *
+ * Existuje proto, že přihlašovací obrazovky obě tyhle cesty slibují:
+ * „Zapomenuté heslo vám nastaví nové správce ordinace" a „Druhý faktor vám
+ * zruší správce ordinace". Bez nich byl člověk, který přišel o telefon,
+ * z aplikace zamčený nadobro – dvoufázové přihlášení je povinné.
+ *
+ * Obě akce ruší všechny relace dotčeného účtu, proto se potvrzují.
+ */
+export function ObnovaPristupu({
+  userId,
+  userName,
+  jaSam,
+  maDruhyFaktor,
+}: {
+  userId: string
+  userName: string
+  jaSam: boolean
+  maDruhyFaktor: boolean
+}) {
+  const [heslo, hesloAkce] = useActionState(resetUserPassword, PRAZDNY_OBNOVA_STAV)
+  const [faktor, faktorAkce] = useActionState(resetUserTotp, PRAZDNY_OBNOVA_STAV)
+  const [ptamSe, setPtamSe] = useState<'heslo' | 'faktor' | null>(null)
+
+  const noveHeslo = heslo.noveHeslo
+  const zruseno = faktor.zruseno2fa
+
+  // Heslo se zobrazí jednou. Dokud je na obrazovce, nic jiného se nenabízí –
+  // kdyby si ho admin nepřepsal a klepl jinam, už ho nikde nezíská.
+  if (noveHeslo) {
+    return (
+      <div className="space-y-2 text-left">
+        <p className="text-sm font-medium">Nové heslo pro {noveHeslo.jmeno}</p>
+        <p className="udaj rounded-lg border border-obrys-silny bg-podklad px-3 py-2 text-base font-semibold break-all select-all">
+          {noveHeslo.heslo}
+        </p>
+        <p className="text-xs text-text-tlumeny">
+          Zobrazí se jen jednou. Předejte ho osobně – aplikace hesla neposílá e-mailem.
+          Uživatel byl odhlášen ze všech zařízení.
+        </p>
+      </div>
+    )
+  }
+
+  if (zruseno) {
+    return (
+      <p className="text-left text-sm text-uspech">
+        Druhý faktor pro {zruseno.jmeno} je zrušený.{' '}
+        {zruseno.jaSam
+          ? 'Jste odhlášeni – při dalším přihlášení si nastavíte nový.'
+          : 'Uživatel si ho nastaví při nejbližším přihlášení.'}
+      </p>
+    )
+  }
+
+  if (ptamSe === null) {
+    return (
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button type="button" variant="nenapadny" onClick={() => setPtamSe('heslo')}>
+          Nové heslo
+        </Button>
+        {maDruhyFaktor ? (
+          <Button type="button" variant="nenapadny" onClick={() => setPtamSe('faktor')}>
+            Zrušit ověření
+          </Button>
+        ) : null}
+      </div>
+    )
+  }
+
+  const jeHeslo = ptamSe === 'heslo'
+  const chyba = jeHeslo ? heslo.error : faktor.error
+
+  return (
+    <form action={jeHeslo ? hesloAkce : faktorAkce} className="space-y-2 text-left">
+      <input type="hidden" name="userId" value={userId} />
+
+      <p className="text-sm text-text-tlumeny">
+        {jeHeslo
+          ? `Nastavit ${userName} nové jednorázové heslo? Bude odhlášen ze všech zařízení.`
+          : jaSam
+            ? 'Zrušit si druhý faktor? Budete odhlášeni a při dalším přihlášení si nastavíte nový.'
+            : `Zrušit ${userName} druhý faktor? Bude odhlášen a nastaví si nový při přihlášení.`}
+      </p>
+
+      {chyba ? <Alert tone="chyba">{chyba}</Alert> : null}
+
+      <div className="flex flex-wrap justify-end gap-2">
+        <ObnovaTlacitko jeHeslo={jeHeslo} />
+        <Button type="button" variant="nenapadny" onClick={() => setPtamSe(null)}>
+          Zpět
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+/** Vlastní komponenta: useFormStatus čte stav formuláře, ve kterém je vnořený. */
+function ObnovaTlacitko({ jeHeslo }: { jeHeslo: boolean }) {
+  const { pending } = useFormStatus()
+
+  return (
+    <Button type="submit" variant="vedlejsi" disabled={pending}>
+      {pending
+        ? jeHeslo
+          ? 'Nastavuji…'
+          : 'Ruším…'
+        : jeHeslo
+          ? 'Ano, nové heslo'
+          : 'Ano, zrušit'}
     </Button>
   )
 }

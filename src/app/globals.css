@@ -1,36 +1,139 @@
 @import 'tailwindcss';
 
 /*
- * Ordinace je prostředí, kde se pracuje ve spěchu a často na tabletu.
- * Výchozí velikost písma je proto větší než obvyklé a ovládací prvky mají
- * dost velkou plochu na dotek.
+ * MedPředání — vizuální systém „ordinační tiskopis".
+ *
+ * Tohle není dashboard, ale nástroj, který se používá desetkrát denně,
+ * ve spěchu a s pacientem v místnosti. Řídí se proto disciplínou dobře
+ * udělaného lékařského formuláře: jedna barva inkoustu, zřetelné linky,
+ * a čísla a kódy vysázené jako údaje, ne jako text.
+ *
+ * Jména tokenů zůstávají česká a shodná s dřívější podobou, takže změna
+ * vzhledu nevyžaduje sáhnout do jediné obrazovky.
  */
 @theme {
-  --color-podklad: oklch(0.985 0.002 250);
+  /* --- Papír a inkoust ------------------------------------------------- */
+  /* Chladná bílá, ne krémová: má to působit jako klinický formulář. */
+  --color-podklad: oklch(0.979 0.0035 235);
   --color-plocha: oklch(1 0 0);
-  --color-obrys: oklch(0.9 0.004 250);
-  --color-text: oklch(0.22 0.01 250);
-  --color-text-tlumeny: oklch(0.52 0.012 250);
+  --color-obrys: oklch(0.906 0.007 238);
+  --color-obrys-silny: oklch(0.845 0.011 240);
 
-  --color-hlavni: oklch(0.52 0.16 250);
-  --color-hlavni-tmavy: oklch(0.44 0.17 250);
-  --color-uspech: oklch(0.55 0.15 150);
-  --color-varovani: oklch(0.62 0.16 65);
-  --color-chyba: oklch(0.55 0.19 25);
+  /* Text je modročerný jako inkoust z pera, ne neutrálně šedý. */
+  --color-text: oklch(0.265 0.023 248);
+  --color-text-tlumeny: oklch(0.523 0.019 246);
+
+  /* --- Hlavní barva ---------------------------------------------------- */
+  /* Hluboká petrolejová. Chladnější a klinič­tější než obvyklá modř rozhraní. */
+  --color-hlavni: oklch(0.475 0.082 214);
+  --color-hlavni-tmavy: oklch(0.393 0.079 214);
+  --color-hlavni-svetly: oklch(0.955 0.017 214);
+
+  /* --- Signál ----------------------------------------------------------- */
+  /*
+   * Jediné místo, kde se používá: kód předání a běžící odpočet. Je to ten
+   * jeden okamžik, kdy se na obrazovku dívá pacient přes stůl, a musí být
+   * nezaměnitelný. Nikde jinde tahle barva být nesmí.
+   */
+  --color-signal: oklch(0.782 0.152 74);
+  --color-inkoust: oklch(0.223 0.024 250);
+
+  /* --- Stavy ------------------------------------------------------------ */
+  --color-uspech: oklch(0.523 0.118 158);
+  --color-uspech-svetly: oklch(0.963 0.024 158);
+  --color-varovani: oklch(0.593 0.126 62);
+  --color-chyba: oklch(0.523 0.184 24);
+  --color-chyba-svetly: oklch(0.966 0.019 24);
+
+  /* --- Písmo ------------------------------------------------------------ */
+  /*
+   * IBM Plex Sans má úplnou českou diakritiku a byl navržený pro technická
+   * prostředí – k přístroji v ordinaci sedí líp než neutrální rozhraní.
+   * Mono varianta nese všechno, co je ÚDAJ: kódy MKN-10, kód předání, data,
+   * počty stran, velikosti. Že je něco k opsání, se tím pozná na první pohled.
+   */
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, 'SF Mono', monospace;
+
+  --radius-xl: 0.625rem;
+  --radius-2xl: 0.875rem;
 }
 
+/*
+ * Základní velikost je větší než na běžném webu. Ordinace se ovládá vestoje,
+ * na tabletu a často přes půl stolu.
+ */
 html {
-  font-size: 17px;
+  font-size: 16.5px;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   background-color: var(--color-podklad);
   color: var(--color-text);
-  -webkit-text-size-adjust: 100%;
+  font-family: var(--font-sans);
+  /* Number-forms: aby číslice v tabulkách stály pod sebou. */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Viditelné zaměření klávesnicí – ordinace se často ovládá jen klávesnicí. */
+/* Nadpisy jsou sevřenější – dodává to tiskopisu pevnost. */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+/* Delší odstavce se nemají lámat tak, aby na posledním řádku zbylo jedno slovo. */
+p {
+  text-wrap: pretty;
+}
+
+/*
+ * Zaměření klávesnicí musí být vidět na první pohled – část obsluhy ovládá
+ * aplikaci jen klávesnicí, protože má ruce zaneprázdněné.
+ */
 :focus-visible {
-  outline: 3px solid var(--color-hlavni);
+  outline: 2px solid var(--color-hlavni);
   outline-offset: 2px;
+  border-radius: 2px;
+}
+
+::selection {
+  background-color: var(--color-hlavni-svetly);
+  color: var(--color-hlavni-tmavy);
+}
+
+/* Kdo si v systému vypnul animace, nemá je vidět ani tady. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/*
+ * Popisek údaje: verzálky v mono s prostrkáním. Používá se pro klíče
+ * v tabulkách a u metadat – tedy tam, kde stojí NÁZEV ÚDAJE, ne otázka
+ * na uživatele. Popisky formulářových polí zůstávají větou, protože se
+ * čtou ve spěchu.
+ */
+.popisek-udaje {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-tlumeny);
+}
+
+/* Hodnota k opsání nebo k porovnání: kód, datum, velikost, počet. */
+.udaj {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }

@@ -99,7 +99,7 @@ session, nikdy z adresy.
 | `/knihovna` | Problémy ordinace, hledání podle názvu i kódu MKN-10 | všichni (sestra jen čte) |
 | `/knihovna/[problemId]` | Dokumenty problému a jejich verze, náhledy; lékař a admin navíc nahrávají, přejmenovávají, řadí a archivují | všichni (sestra jen čte) |
 | `/knihovna/novy` · `/knihovna/[problemId]/upravit` | Založení problému, úprava názvu a kódu, archivace | lékař, admin |
-| `/nastaveni` | Uživatelé, role, stav účtu a druhého faktoru; nastavení ordinace (platnost odkazu, délka okna předání, odhlášení při nečinnosti) | admin |
+| `/nastaveni` | Uživatelé, role, stav účtu a druhého faktoru, obnova přístupu (nové jednorázové heslo, zrušení druhého faktoru); nastavení ordinace (platnost odkazu, délka okna předání, odhlášení při nečinnosti) | admin |
 | `/nastaveni/cip` | Čipy ordinace a návod, jak nálepku zapsat, ověřit a zamknout | admin |
 | `/nastaveni/audit` | Auditní deník ordinace se stránkováním a s ověřením neporušenosti hashového řetězu | lékař, admin |
 | `/prihlaseni` · `/prihlaseni/nastaveni-2fa` · `/prihlaseni/overeni` | Heslo, zapnutí druhého faktoru, kód z ověřovací aplikace | — |
@@ -282,6 +282,18 @@ Relace je řádek v databázi, ne podepsaný token. Odhlášení se tak projeví
 a vypršení při nečinnosti je skutečné. Posouvá se jen záznam v databázi, ne cookie –
 Next.js dovoluje zápis cookie výhradně v Server Action, Route Handleru a v proxy,
 takže při vykreslování stránky by to skončilo chybou za běhu.
+
+### Když se někdo nedostane dovnitř
+
+Dvoufázové přihlášení je povinné, takže ztráta telefonu by bez cesty zpět znamenala
+trvalé zamčení účtu. Správce ordinace proto v `/nastaveni` u každého uživatele nastaví
+nové jednorázové heslo nebo zruší druhý faktor. Obojí smí udělat **i sám sobě** – v malé
+ordinaci bývá jediný.
+
+Obě akce ruší všechny relace dotčeného účtu. Kdo žádá o obnovu přístupu, má typicky
+podezření, že se k účtu dostal někdo další; ponechat běžící přihlášení by obnovu
+vyprázdnilo. Nové heslo se zobrazí jednou a předává se osobně – aplikace hesla
+neposílá e-mailem, protože schránka bývá v ordinaci sdílená a zprávy se z ní nemažou.
 
 Kontrola přihlášení sedí ve stránkách a v přístupové vrstvě, **ne v layoutu**. Layout se
 při navigaci nevykresluje znovu a nerozhoduje o tom, jestli se zbytek cesty vykreslí –
