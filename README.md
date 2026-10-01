@@ -283,6 +283,27 @@ a vypršení při nečinnosti je skutečné. Posouvá se jen záznam v databázi
 Next.js dovoluje zápis cookie výhradně v Server Action, Route Handleru a v proxy,
 takže při vykreslování stránky by to skončilo chybou za běhu.
 
+### Vývojová zkratka přihlášení
+
+Proklikat aplikaci při vývoji přes heslo a druhý faktor je otrava. Nastav proto
+v `.env`:
+
+```
+DEV_LOGIN_EMAIL="lekar@example.cz"
+```
+
+Přihlašovací obrazovka pak nabídne tlačítko, které vydá **platnou** relaci pro ten
+účet bez hesla a bez druhého faktoru.
+
+Autentizace se tím nemění – relace je skutečná a prochází stejnou cestou jako po
+normálním přihlášení, včetně klouzavé expirace, odhlášení a auditu. Mění se jen to,
+že se vydá bez ověření. Celá zkratka je v jediném souboru
+[src/app/api/dev/prihlasit/route.ts](src/app/api/dev/prihlasit/route.ts), takže se
+odstraní jedním příkazem.
+
+**V produkci se nedá zapnout.** S nastavenou `DEV_LOGIN_EMAIL` aplikace odmítne
+nastartovat a cesta se navíc tváří, že neexistuje. Ověřeno obojí.
+
 ### Když se někdo nedostane dovnitř
 
 Dvoufázové přihlášení je povinné, takže ztráta telefonu by bez cesty zpět znamenala

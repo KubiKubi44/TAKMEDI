@@ -1,8 +1,9 @@
 import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
 
-import { CenteredPage } from '@/components/ui'
+import { Alert, CenteredPage } from '@/components/ui'
 import { getSession } from '@/lib/auth'
+import { env } from '@/lib/env'
 
 import { LoginForm } from './login-form'
 
@@ -24,6 +25,41 @@ export default async function LoginPage() {
   return (
     <CenteredPage title="Přihlášení do MedPředání">
       <LoginForm />
+      {/*
+
+        Vývojová zkratka. Bez DEV_LOGIN_EMAIL v prostředí se nevykreslí
+
+        a v produkci aplikace s tou proměnnou vůbec nenastartuje.
+
+      */}
+
+      {env.DEV_LOGIN_EMAIL && env.NODE_ENV !== 'production' ? (
+
+        <div className="mt-7 space-y-3 border-t border-obrys pt-5">
+
+          <Alert tone="info">
+
+            Vývojový režim: zkratka přihlásí {env.DEV_LOGIN_EMAIL} bez hesla a bez druhého
+
+            faktoru. V produkci je vypnutá.
+
+          </Alert>
+
+          <a
+
+            href="/api/dev/prihlasit"
+
+            className="inline-flex min-h-12 w-full items-center justify-center rounded-xl border border-dashed border-obrys-silny bg-plocha px-5 font-medium text-text-tlumeny transition-colors hover:border-hlavni hover:text-hlavni-tmavy"
+
+          >
+
+            Přihlásit bez ověření (jen vývoj)
+
+          </a>
+
+        </div>
+
+      ) : null}
     </CenteredPage>
   )
 }

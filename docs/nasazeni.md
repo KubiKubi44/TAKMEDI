@@ -437,6 +437,10 @@ dokument. Záloha, ze které se nikdy nic neobnovilo, není záloha.
 
 ## 7. Kontrolní seznam před spuštěním
 
+- [ ] **`DEV_LOGIN_EMAIL` není v prostředí.** Je to vývojová zkratka, která vydá
+  platnou relaci bez hesla a bez druhého faktoru. Aplikace s ní v produkci odmítne
+  nastartovat, takže se to pozná hned – ale do seznamu to patří.
+
 - [ ] **HTTPS** platí na doméně a certifikát se obnovuje sám. `http://` přesměrovává na `https://`.
 - [ ] **HSTS** dorazí až do prohlížeče: `curl -sI https://ordinace.example.cz | grep -i strict-transport` vrátí `max-age=63072000; includeSubDomains; preload`. Hlavičku posílá aplikace, proxy ji nesmí zahodit. Doménu do seznamu preload přidávejte, až když jste si jistí, že na ní nikdy nepoběží nic bez HTTPS.
 - [ ] **`x-forwarded-for` se přepisuje** a `TRUSTED_PROXY_HOPS` sedí. Po prvním přihlášení má záznam v auditu vyplněnou IP adresu, a je to adresa klienta, ne proxy.

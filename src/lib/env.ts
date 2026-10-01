@@ -75,6 +75,18 @@ const schema = z.object({
   CLEANUP_TOKEN: z.string().min(24).optional(),
 
   /**
+   * VÝVOJOVÁ ZKRATKA PŘIHLÁŠENÍ.
+   *
+   * Když je vyplněná, nabídne přihlašovací obrazovka tlačítko, které vyrobí
+   * platnou relaci pro daný účet bez hesla a bez druhého faktoru. Slouží
+   * k proklikání aplikace při vývoji.
+   *
+   * Autentizace sama se tím NEMĚNÍ – relace je skutečná, jen se vydá bez
+   * ověření. V produkci aplikace s touhle hodnotou odmítne nastartovat.
+   */
+  DEV_LOGIN_EMAIL: z.string().optional(),
+
+  /**
    * Klíč pro šifrování uzávěrů Server Actions.
    *
    * Není to jen šifrování: stejná hodnota je solí pro hash identifikátorů akcí.
@@ -155,6 +167,12 @@ function load() {
       console.warn(
         '[medpredani] TRUSTED_PROXY_HOPS=0: hlavičce x-forwarded-for se nevěří a IP adresy\n' +
           'v auditu budou prázdné. Za reverzní proxy nastav počet skoků.',
+      )
+    }
+    if (parsed.data.DEV_LOGIN_EMAIL) {
+      throw new Error(
+        'DEV_LOGIN_EMAIL je vývojová zkratka přihlášení a v produkci nesmí být nastavená.\n' +
+          'Vydává platnou relaci bez hesla a bez druhého faktoru. Odstraňte ji z prostředí.',
       )
     }
     if (parsed.data.EMAIL_DRIVER === 'console') {
